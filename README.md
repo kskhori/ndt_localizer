@@ -1,92 +1,141 @@
-# ndt_localizer
+## A ROS-based NDT localizer with multi-sensor state estimation
 
+This repo is a ROS based multi-sensor robot localisation. An NDT localizer is loosely-coupled with wheeled odometry and IMU for continuous global localization within a pre-build point cloud map. 
 
+## Prerequisites
+You will need the [robot_localization](http://docs.ros.org/en/melodic/api/robot_localization/html/index.html) package. The configurations of multi-sensors of our robot are detailed in `cfgs/global_ekf.yaml` and `cfgs/local_ekf.yaml`.
 
-## Getting started
+## Localization in a pointcloud map(pcd)
 
-To make it easy for you to get started with GitLab, here's a list of recommended next steps.
+A demo video on CourtYard dataset:
 
-Already a pro? Just edit this README.md and make it your own. Want to make it easy? [Use the template at the bottom](#editing-this-readme)!
+[![IMAGE ALT TEXT HERE](cfgs/demo.gif)](https://youtu.be/JFto07ufFXM)
 
-## Add your files
+## How to use
+### Build in your ros workspace
+clone this repo in your `ros workspace/src/`, and then `catkin_make` (or `catkin build`):
+```bash
+cd catkin_ws/src/
+git clone https://github.com/FAIRSpace-AdMaLL/ndt_localizer.git
+cd ..
+catkin_make
+```
 
-- [ ] [Create](https://docs.gitlab.com/ee/user/project/repository/web_editor.html#create-a-file) or [upload](https://docs.gitlab.com/ee/user/project/repository/web_editor.html#upload-a-file) files
-- [ ] [Add files using the command line](https://docs.gitlab.com/ee/gitlab-basics/add-file.html#add-a-file-using-the-command-line) or push an existing Git repository with the following command:
+### Get a pcd map
+You need a point cloud map (pcd format) for localization. You can get a HD point cloud map from any HD map supplier, or you can make one yourself (of course, the accuracy will not be as high as the HD map). 
+
+We use our offline version of lio-sam to build the point cloud map:
+https://github.com/FAIRSpace-AdMaLL/liosam_mapper
+
+Previously-generated maps can be downloaded from [here](https://drive.google.com/drive/folders/1TtTM9T1s1I-pzLHV4t07wP-gAJw3LyR7?usp=sharing)
+The court_yard data (rosbags) for mapping or testing ndt_localizer can be downloaded here: [Court Yard Data](https://drive.google.com/drive/folders/11sSSurwvhftXqFAajDZNHi22Otlc323U?usp=sharing)
+The beach data (rosbags and previously-generated maps) can be downloaded here: [Beach Data](https://drive.google.com/drive/folders/1pS4aoEwj1VxV9x5Hg5HrV8soTHA3rUHa?usp=sharing)
+
+### Setup configuration
+
+#### Config map loader
+Move your map pcd file (.pcd) to the map folder inside this project (`ndt_localizer/map`), change the pcd_path in `map_loader.launch` to you pcd path, for example:
+
+```xml
+<arg name="pcd_path"  default="$(find ndt_localizer)/map/court_yard_map.pcd"/>
+```
+
+, then in `ndt_localizer.launch` modify the trajectory path (as a height map for initialization):
+
+```xml
+<arg name="path_file" default="$(find ndt_localizer)/map/court_yard_map.csv" doc="Mapping trajectory as height map" />
+```
+
+You also need to configure the submap parameters:
+
+```xml
+<arg name="submap_size_xy" default="50.0" />
+<arg name="submap_size_z" default="20.0" />
+<arg name="map_switch_thres" default="25.0" />
+```
+
+#### Config point cloud downsample
+
+Config your Lidar point cloud topic in `launch/points_downsample.launch`:
+
+```xml
+<arg name="points_topic" default="/os_cloud_node/points" />
+```
+
+If your Lidar data is sparse (like VLP-16), you need to config smaller `leaf_size` in `launch/points_downsample.launch` like `1.0`. If your lidar point cloud is dense (VLP-32, Hesai Pander40P, HDL-64 ect.), keep `leaf_size` as `2.0`.
+
+#### Config static tf
+
+There are a static transform from `/world` to `/map`:
+
+```xml
+<node pkg="tf2_ros" type="static_transform_publisher" name="world_to_map" args="0 0 0 0 0 0 map world" />
+```
+
+#### Config ndt localizer
+You can config NDT params in `ndt_localizer.launch`. Tha main params of NDT algorithm is:
+
+```xml
+<arg name="trans_epsilon" default="0.05" doc="The maximum difference between two consecutive transformations in order to consider convergence" />
+<arg name="step_size" default="0.1" doc="The newton line search maximum step length" />
+<arg name="resolution" default="3.0" doc="The ND voxel grid resolution" />
+<arg name="max_iterations" default="50" doc="The number of iterations required to calculate alignment" />
+<arg name="converged_param_transform_probability" default="3.0" doc="" />
+```
+
+These default params work nice with 64 and 32 lidar.
+
+### Run the localizer
+Once you get your pcd map and configuration ready, run the localizer with:
+
+```bash
+cd catkin_ws
+source devel/setup.bash
+roslaunch ndt_localizer ndt_localizer.launch
+```
+
+Wait a few seconds for the map to load, then you can see your pcd map in rviz.
+
+Give a initial pose of current vehicle with 2D Pose Estimate in the rviz.
+
+This operation will send a init pose to topic `/initialpose`. Then you will see the localization result:
+
+![](cfgs/load_map.png)
+
+Then, play the rosbag in other terminal (e.g. `rosbag play --clock court_yard_wed_repeat_night_2021-03-03-19-07-18.bag`).
+
+The robot will start localization:
+
+![](cfgs/relocalisation.png)
+
+The final localization msg will send to `/odometry/filtered/global` by a multi-sensor state estimation using wheeled odometry, IMU and lidar localisation.
+
+The localizer also publish a tf of `base_link` to `map`:
 
 ```
-cd existing_repo
-git remote add origin https://gitlab.cds.tohoku.ac.jp/horippy/ndt_localizer.git
-git branch -M main
-git push -uf origin main
+---
+transforms: 
+  - 
+    header: 
+      seq: 0
+      stamp: 
+        secs: 1566536121
+        nsecs: 251423898
+      frame_id: "map"
+    child_frame_id: "base_link"
+    transform: 
+      translation: 
+        x: -94.8022766113
+        y: 544.097351074
+        z: 42.5747337341
+      rotation: 
+        x: 0.0243843578881
+        y: 0.0533175268768
+        z: -0.702325920272
+        w: 0.709437048124
 ```
 
-## Integrate with your tools
 
-- [ ] [Set up project integrations](https://gitlab.cds.tohoku.ac.jp/horippy/ndt_localizer/-/settings/integrations)
+### Acknowledgement
 
-## Collaborate with your team
-
-- [ ] [Invite team members and collaborators](https://docs.gitlab.com/ee/user/project/members/)
-- [ ] [Create a new merge request](https://docs.gitlab.com/ee/user/project/merge_requests/creating_merge_requests.html)
-- [ ] [Automatically close issues from merge requests](https://docs.gitlab.com/ee/user/project/issues/managing_issues.html#closing-issues-automatically)
-- [ ] [Enable merge request approvals](https://docs.gitlab.com/ee/user/project/merge_requests/approvals/)
-- [ ] [Automatically merge when pipeline succeeds](https://docs.gitlab.com/ee/user/project/merge_requests/merge_when_pipeline_succeeds.html)
-
-## Test and Deploy
-
-Use the built-in continuous integration in GitLab.
-
-- [ ] [Get started with GitLab CI/CD](https://docs.gitlab.com/ee/ci/quick_start/index.html)
-- [ ] [Analyze your code for known vulnerabilities with Static Application Security Testing(SAST)](https://docs.gitlab.com/ee/user/application_security/sast/)
-- [ ] [Deploy to Kubernetes, Amazon EC2, or Amazon ECS using Auto Deploy](https://docs.gitlab.com/ee/topics/autodevops/requirements.html)
-- [ ] [Use pull-based deployments for improved Kubernetes management](https://docs.gitlab.com/ee/user/clusters/agent/)
-- [ ] [Set up protected environments](https://docs.gitlab.com/ee/ci/environments/protected_environments.html)
-
-***
-
-# Editing this README
-
-When you're ready to make this README your own, just edit this file and use the handy template below (or feel free to structure it however you want - this is just a starting point!). Thank you to [makeareadme.com](https://www.makeareadme.com/) for this template.
-
-## Suggestions for a good README
-Every project is different, so consider which of these sections apply to yours. The sections used in the template are suggestions for most open source projects. Also keep in mind that while a README can be too long and detailed, too long is better than too short. If you think your README is too long, consider utilizing another form of documentation rather than cutting out information.
-
-## Name
-Choose a self-explaining name for your project.
-
-## Description
-Let people know what your project can do specifically. Provide context and add a link to any reference visitors might be unfamiliar with. A list of Features or a Background subsection can also be added here. If there are alternatives to your project, this is a good place to list differentiating factors.
-
-## Badges
-On some READMEs, you may see small images that convey metadata, such as whether or not all the tests are passing for the project. You can use Shields to add some to your README. Many services also have instructions for adding a badge.
-
-## Visuals
-Depending on what you are making, it can be a good idea to include screenshots or even a video (you'll frequently see GIFs rather than actual videos). Tools like ttygif can help, but check out Asciinema for a more sophisticated method.
-
-## Installation
-Within a particular ecosystem, there may be a common way of installing things, such as using Yarn, NuGet, or Homebrew. However, consider the possibility that whoever is reading your README is a novice and would like more guidance. Listing specific steps helps remove ambiguity and gets people to using your project as quickly as possible. If it only runs in a specific context like a particular programming language version or operating system or has dependencies that have to be installed manually, also add a Requirements subsection.
-
-## Usage
-Use examples liberally, and show the expected output if you can. It's helpful to have inline the smallest example of usage that you can demonstrate, while providing links to more sophisticated examples if they are too long to reasonably include in the README.
-
-## Support
-Tell people where they can go to for help. It can be any combination of an issue tracker, a chat room, an email address, etc.
-
-## Roadmap
-If you have ideas for releases in the future, it is a good idea to list them in the README.
-
-## Contributing
-State if you are open to contributions and what your requirements are for accepting them.
-
-For people who want to make changes to your project, it's helpful to have some documentation on how to get started. Perhaps there is a script that they should run or some environment variables that they need to set. Make these steps explicit. These instructions could also be useful to your future self.
-
-You can also document commands to lint the code or run tests. These steps help to ensure high code quality and reduce the likelihood that the changes inadvertently break something. Having instructions for running tests is especially helpful if it requires external setup, such as starting a Selenium server for testing in a browser.
-
-## Authors and acknowledgment
-Show your appreciation to those who have contributed to the project.
-
-## License
-For open source projects, say how it is licensed.
-
-## Project status
-If you have run out of energy or time for your project, put a note at the top of the README saying that development has slowed down or stopped completely. Someone may choose to fork your project or volunteer to step in as a maintainer or owner, allowing your project to keep going. You can also make an explicit request for maintainers.
+Thanks for AdamShan's autoware_ros implementation https://github.com/AbangLZU/ndt_localizer.git. 
